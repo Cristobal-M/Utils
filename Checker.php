@@ -6,6 +6,7 @@ class RequestChecker{
     const TYPE_OBJECT = 'object';
     const PROPERTY_TYPES = ['int', 'string', 'text'];
     const VALIDATION_DEFAULT = ['nullable'=> false, 'database' => false, 'type' => null, 'checker' => null];
+    const SPACES = array("\r", "\n", " ", "\t");
 
     //public const TYPES = [self::TYPE_INT, self::TYPE_STRING, self::TYPE_ARRAY];
     //Contendra informacion sobre las propiedades
@@ -15,7 +16,7 @@ class RequestChecker{
     //propiedades definidad
     private $type;
     //Cambiara entre 'validationBefore' y 'validationAfter'
-    private $currentPropValSetting;
+    private $currentPropertyName;
     //La propiedad que actualmente estamos "configurando"
     private $currentPropertySetting;
     //Los mensajes de error que se iran produciendo
@@ -25,12 +26,13 @@ class RequestChecker{
 
     function __construct($type = self::TYPE_OBJECT){
         $this->currentPropertySetting = null;
-        //Por defecto empezaremos defineindo las validaciones anteriores a la
-        //transformacion, si es que ocurriera
-        $this->currentPropValSetting = 'validationBefore';
-        $this->errors = array();
-        $this->properties = array();
+        $this->errors = '';
+        $this->properties = array('validationBefore' =>[], 'fromJSON' => [], 'validationAfter'=>[]);
         $this->type = $type;
+    }
+
+    public static function Create($type = self::TYPE_OBJECT){
+      return new self($type);
     }
 
     public function setType($type){
@@ -46,72 +48,82 @@ class RequestChecker{
     }
 
     public function setProperty($name){
-        $this->before();
-        $this->properties[$this->currentPropValSetting][$name] = self::VALIDATION_DEFAULT;
-        //unset($this->currentPropertySetting);
-        $this->currentPropertySetting = $name;
-
+        $this->currentPropertyName = $name;
+        $this->properties['validationBefore'][$this->currentPropertyName] = self::VALIDATION_DEFAULT;
+        unset($this->currentPropertySetting);
+        $this->currentPropertyName = $name;
+        $this->currentPropertySetting = &$this->properties['validationBefore'][$name];
 
         return $this;
     }
 
     public function fromJSON($toArray = true){
-        $this->properties['fromJSON'][$this->currentPropertySetting] = $toArray;
+        $this->properties['fromJSON'][$this->currentPropertyName] = $toArray;
         return $this;
     }
 
     public function required($value = true){
-        $this->properties[$this->currentPropValSetting][$this->currentPropertySetting]['required'] = $value;
+        $this->currentPropertySetting['required'] = $value;
         return $this;
     }
 
     public function nullable($value = true){
-        $this->properties[$this->currentPropValSetting][$this->currentPropertySetting]['nullable'] = $value;
+        $this->currentPropertySetting['nullable'] = $value;
+        return $this;
+    }
+
+    public function database($value = true){
+        $this->currentPropertySetting['database'] = $value;
         return $this;
     }
 
     public function type($type = null){
-        $this->properties[$this->currentPropValSetting][$this->currentPropertySetting]['type'] = $type;
+        if( $type === null || in_array($type, self::PROPERTY_TYPES) ){
+          $this->currentPropertySetting['type'] = $type;
+        }
+        else{
+          throw new \Exception("Argument for function type with value $type is invalid");
+        }
+
         return $this;
     }
 
     public function before(){
-        $this->currentPropValSetting = 'validationBefore';
+        unset($this->currentPropertySetting);
+        $this->currentPropertySetting = &$this->properties['validationBefore'][$this->currentPropertyName];
         return $this;
     }
 
     public function after(){
-        $this->currentPropValSetting = 'validationAfter';
-        $options = &$this->properties[$this->currentPropValSetting][$this->currentPropertySetting];
-        if( !isset($options) ){
-            $options =  self::VALIDATION_DEFAULT;
+        unset($this->currentPropertySetting);
+        $this->currentPropertySetting = &$this->properties['validationAfter'][$this->currentPropertyName];
+        if( !isset($this->currentPropertySetting) ){
+            $this->currentPropertySetting =  self::VALIDATION_DEFAULT;
         }
 
         return $this;
     }
 
     public function checker($checkObj){
-        if( ! $checkObj instanceof self ) throw new Exception('Argument is not of a instance of RequestChecker');
-        $this->properties[$this->currentPropValSetting][$this->currentPropertySetting]['checker'] = $checkObj;
+        if( ! $checkObj instanceof self ) throw new Exception('Argument for function checker is not an instance of ' . get_class());
+        $this->currentPropertySetting['checker'] = $checkObj;
         return $this;
     }
 
     private function addError($name, $message){
-        if( isset($this->errors[$name]) ){
-            array_push($this->errors[$name], $message);
-            return;
-        }
-        $this->errors[$name] = [$message];
+        $this->errors.= "$name: $message\n";
     }
-    public function getErrors(){
+
+    public function getErrors($linePrefix = null){
+        if($linePrefix){
+            return str_replace("\n", "\n$linePrefix", $this->errors);
+        }
         return $this->errors;
     }
 
-
-    private function makeEmptyIfPossible($value){
+    private function removeSpaces($value){
         $value = str_replace("\xEF\xBB\xBF", "", $value);
-        $value = preg_replace('/\s+/', ' ', $value);
-        return $value;
+        return str_replace(self::SPACES, '', $value);//preg_replace('/\s+/', ' ', $value);
     }
 
     private function escape($value){
@@ -123,10 +135,10 @@ class RequestChecker{
         $forDatabase = $options[$prop]['database'];
 
         if( isset($this->data[$prop]) ){
-            $empty = $this->makeEmptyIfPossible($this->data[$prop]);
-            echo "-------------\n$empty\n";
+            $empty = $this->removeSpaces($this->data[$prop]);
+            //echo "-------------\n$empty\n";
             if(!$nullable && $empty === ''){
-                $this->addError($prop, "The property $prop with value '{$this->data[$prop]}' is required but not nullable");
+                $this->addError($prop, "The property $prop is required but is empty and is not nullable");
                 return;
             }
             if( $nullable && $empty === ''){
@@ -154,13 +166,17 @@ class RequestChecker{
                     $this->data[$prop] = (int) $this->data[$prop];
                 }
                 else{
-                    $this->addError($prop, "The property $prop is not of type: $type");
+                    $this->addError($prop, "The property $prop is not numeric");
                 }
                 break;
             case 'string':
                 $value = (string) $this->data[$prop];
+                $empty = $this->removeSpaces($value);
                 if($forDatabase){
-                    $value = "'{$this->escape($value)}'";
+                    if($empty === '')
+                      $value = '';
+                    else
+                      $value = "'{$this->escape($value)}'";
                 }
                 $this->data[$prop] = $value;
                 break;
@@ -180,18 +196,18 @@ class RequestChecker{
         if($checker === null) return;
 
         if( !empty($this->data[$prop]) && !$checker->check($this->data[$prop]) ){
-            $this->addError('Checking', "The property $prop does not comply with " . json_encode($checker->getErrors()) );
+            $this->addError('Checking', "The property $prop does not comply with:\n\t " . $checker->getErrors("\t") );
             //Es posible que haya habido alguna transformacion
-            $this->data[$prop] = $checker->getData();
-            $checker->clearErrors();
         }
+        $this->data[$prop] = $checker->getData();
+        $checker->clearErrors();
     }
 
     private function checkObject(){
 
         foreach ($this->properties['validationBefore'] as $prop => $options) {
-            $this->checkType($prop, $this->properties['validationBefore']);
             $this->checkRequired($prop, $this->properties['validationBefore']);
+            $this->checkType($prop, $this->properties['validationBefore']);
             $this->checkSubChecker($prop, $this->properties['validationBefore']);
         }
 
@@ -200,12 +216,12 @@ class RequestChecker{
         }
 
         foreach ($this->properties['validationAfter'] as $prop => $options) {
-            $this->checkType($prop, $this->properties['validationBefore']);
-            $this->checkRequired($prop, $this->properties['validationBefore']);
-            $this->checkSubChecker($prop, $this->properties['validationBefore']);
+            $this->checkRequired($prop, $this->properties['validationAfter']);
+            $this->checkType($prop, $this->properties['validationAfter']);
+            $this->checkSubChecker($prop, $this->properties['validationAfter']);
         }
 
-        return count($this->errors) === 0;
+        return $this->errors === '';
     }
 
     private function checkArray(){
@@ -224,28 +240,32 @@ class RequestChecker{
         return $result;
     }
 
-    public function check($data){
+    public function check($data, $throwEx = false){
         $this->data = $data;
+        $res = false;
         switch ($this->type) {
             case self::TYPE_ITERABLE:
-                return $this->checkArray();
+                $res = $this->checkArray();
+                break;
             case self::TYPE_OBJECT:
-                return $this->checkObject();
+                $res = $this->checkObject();
         }
+        if(!$res && $throwEx){
+          throw new \Exception($this->errors);
+        }
+        return $res;
     }
 
     public function clearErrors(){
-        $this->errors = array();
+        $this->errors = '';
     }
 }
 
+$checkerPrueba = RequestChecker::Create()->setProperty('hello')->type('string')->database();
+
 $checker = new RequestChecker(RequestChecker::TYPE_ITERABLE);
-$checkerPrueba = new RequestChecker();
-
-$checkerPrueba->setProperty('hello')->type('integer');
-
 $checker->setProperty('prueba')->required()->fromJSON(true)->after()->checker($checkerPrueba);
-$checker->setProperty('cosa')->required()->nullable()->type('string');
+$checker->setProperty('cosa')->type('string')->database();
 
 $test = array(array('cosa' => "\n", 'prueba' => '{"hello": "world"}'), array('cosa' => 90, 'prueba' => '{"hello": "world"}'));
 
